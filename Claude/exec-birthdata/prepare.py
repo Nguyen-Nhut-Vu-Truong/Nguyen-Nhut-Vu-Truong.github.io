@@ -134,9 +134,19 @@ def build_people(df: pd.DataFrame) -> pd.DataFrame:
     sized = agg["median_tdc1"].notna()
     agg["size_tercile"] = None
     if sized.sum() >= 3:
-        agg.loc[sized, "size_tercile"] = pd.qcut(
-            agg.loc[sized, "median_tdc1"], 3, labels=["small", "mid", "large"], duplicates="drop"
-        ).astype(str)
+        try:
+            agg.loc[sized, "size_tercile"] = pd.qcut(
+                agg.loc[sized, "median_tdc1"], 3, labels=["small", "mid", "large"]
+            ).astype(str)
+        except ValueError:
+            # Heavily tied TDC1 values collapse the quantile edges, and qcut
+            # then rejects a 3-label list for fewer than 3 bins. Rank first so
+            # ties break deterministically and three bins always exist.
+            pct = agg.loc[sized, "median_tdc1"].rank(pct=True, method="first")
+            agg.loc[sized, "size_tercile"] = pd.cut(
+                pct, [0, 1 / 3, 2 / 3, 1.0],
+                labels=["small", "mid", "large"], include_lowest=True,
+            ).astype(str)
     return agg
 
 

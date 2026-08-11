@@ -67,7 +67,17 @@ def connect() -> sqlite3.Connection:
 
 
 def already_done(con: sqlite3.Connection) -> set[tuple]:
-    cur = con.execute("SELECT execid, role, field FROM answers WHERE status != 'error'")
+    """Queries that should not be repeated on a resume.
+
+    'ok' and 'unsourced' are genuine outcomes -- the page answered, and we keep
+    the answer either way. 'error' and 'empty' are NOT: an error is transient,
+    and 'empty' almost always means the answer-container selector has gone
+    stale. Both must stay retryable, or fixing a selector would leave every
+    previously-missed record permanently skipped.
+    """
+    cur = con.execute(
+        "SELECT execid, role, field FROM answers WHERE status IN ('ok','unsourced')"
+    )
     return {(str(a), b, c) for a, b, c in cur.fetchall()}
 
 
@@ -90,7 +100,8 @@ def build_driver() -> webdriver.Chrome:
     opts.add_argument(f"--profile-directory={C.CHROME_PROFILE}")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
+    # NB: no useAutomationExtension -- recent chromedriver rejects it as an
+    # unrecognised capability and refuses to start.
     if C.HEADLESS:
         opts.add_argument("--headless=new")
     driver = webdriver.Chrome(options=opts)
@@ -236,6 +247,14 @@ def main() -> None:
                         print(f"    retry {attempt}/{C.MAX_RETRIES}: {type(e).__name__}")
                         time.sleep(random.uniform(C.DELAY_MIN, C.DELAY_MAX))
 
+            # A --dump-dom run is a diagnostic, not collection. Writing its
+            # result would let a selector-debugging pass mark the record done
+            # and quietly exclude it from the real run.
+            if args.dump_dom:
+                print(f"    {res['status']} — not saved (--dump-dom is diagnostic)")
+                print("\nStopping after one page. Check output/debug/.")
+                break
+
             save(con, {
                 "execid": str(row["execid"]), "role": row["role"], "field": field,
                 "query": query, "answer_text": res["answer_text"],
@@ -245,12 +264,11 @@ def main() -> None:
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             })
             counts[res["status"]] = counts.get(res["status"], 0) + 1
-            print(f"    {res['status']}  ({res['n_citations'] if 'n_citations' in res else len(res['citations'])} sources)"
-                  if res["status"] != "error" else f"    error: {res['error']}")
 
-            if args.dump_dom and i == 1:
-                print("\n--dump-dom: stopping after one page. Check output/debug/.")
-                break
+            if res["status"] == "error":
+                print(f"    error: {res['error']}")
+            else:
+                print(f"    {res['status']}  ({len(res['citations'])} sources)")
             if i < len(todo):
                 time.sleep(random.uniform(C.DELAY_MIN, C.DELAY_MAX))
     except KeyboardInterrupt:

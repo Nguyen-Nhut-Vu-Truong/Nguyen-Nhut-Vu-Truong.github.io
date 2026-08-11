@@ -45,7 +45,9 @@ PATTERNS = [
 
 def parse_birth_date(text: str | None) -> tuple[str, int | None, str | None]:
     """Return (precision, year, matched_text). Most specific pattern wins."""
-    if not text:
+    # A SQL NULL arrives from pandas as float('nan'), which is TRUTHY -- a bare
+    # `if not text` lets it through and .lower() then raises. Check the type.
+    if not isinstance(text, str) or not text.strip():
         return "none", None, None
     low = text.lower()
     for precision, pat in PATTERNS:
@@ -82,7 +84,12 @@ def validate_dates(df: pd.DataFrame) -> pd.DataFrame:
     d["matched_text"] = [t for _, _, t in parsed]
 
     def verdict(r):
-        if r["status"] != "ok" or r["scraped_year"] is None:
+        # pd.isna, not `is None`: building the column via .apply() coerces None
+        # to NaN, and `NaN is None` is False. Testing identity here silently
+        # sent every unparsed answer into the comparison below, where it failed
+        # and was scored 'contradicted' -- inflating the headline error rate
+        # with rows that contained no date at all.
+        if r["status"] != "ok" or pd.isna(r["scraped_year"]):
             return "no_value"
         if pd.isna(r["birth_year_est"]):
             return "unverified"
@@ -135,14 +142,23 @@ def main() -> None:
     ver = dates["verdict"].value_counts()
     n_dates, n_places = len(dates), len(places)
     full_n = int(prec.get("full", 0))
+    # A partial run (--limit, or an interrupted scrape) can leave one field with
+    # no rows at all; don't turn that into a ZeroDivisionError.
+    full_pct = f"{full_n / n_dates:.1%}" if n_dates else "n/a"
 
     contra = int(ver.get("contradicted", 0))
     checked = contra + int(ver.get("corroborated", 0))
     contra_rate = f"{contra/checked:.1%}" if checked else "n/a"
 
     med_s = dates["elapsed_s"].median()
-    per_exec = (dates["elapsed_s"].sum() + places["elapsed_s"].sum()) / max(
-        1, dates["execid"].nunique())
+    n_people = max(1, df["execid"].nunique())
+    # Wall clock per executive must include the configured inter-query delay,
+    # not just page time -- the delay dominates, and a projection without it
+    # would understate a full run by roughly an order of magnitude.
+    delay = (C.DELAY_MIN + C.DELAY_MAX) / 2
+    page_s = dates["elapsed_s"].sum() + places["elapsed_s"].sum()
+    queries_per_person = max(1, df["field"].nunique())
+    per_exec = page_s / n_people + delay * queries_per_person
 
     lines = [
         "# Phase 2 pilot — result",
@@ -153,7 +169,7 @@ def main() -> None:
         "## The headline number",
         "",
         f"**Exact birth dates (day + month + year): {full_n} / {n_dates} "
-        f"({full_n/n_dates:.1%})**",
+        f"({full_pct})**",
         "",
         "Anything below `full` precision does not meet an exact-birthday",
         "requirement. Year-only values are already available free from",
