@@ -73,7 +73,18 @@ def load() -> pd.DataFrame:
     sample = pd.read_csv(C.SAMPLE_PATH, dtype={"execid": str})
     keep = ["execid", "role", "exec_fullname", "company", "size_tercile", "era",
             "birth_year_est", "birth_year_spread", "cfo_id_method"]
-    return ans.merge(sample[keep], on=["execid", "role"], how="left")
+    merged = ans.merge(sample[keep], on=["execid", "role"], how="left")
+
+    # Stored answers that match no row in the current sample mean the sample was
+    # regenerated (different seed, or a re-pulled Execucomp) after scraping.
+    # Those rows carry no birth_year_est, so they would silently land in
+    # 'unverified' and quietly deflate the validation coverage. Say so instead.
+    orphans = merged["exec_fullname"].isna().sum()
+    if orphans:
+        print(f"WARNING: {orphans} stored answers match no row in "
+              f"{C.SAMPLE_PATH.name}. The sample was probably regenerated after "
+              "scraping — they cannot be validated and are reported separately.")
+    return merged
 
 
 def validate_dates(df: pd.DataFrame) -> pd.DataFrame:

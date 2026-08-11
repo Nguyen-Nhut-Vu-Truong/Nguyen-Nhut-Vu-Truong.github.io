@@ -21,7 +21,7 @@ import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import urlparse, quote_plus, unquote
 
 import pandas as pd
 
@@ -32,7 +32,6 @@ try:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.common.by import By
-    from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.support.wait import WebDriverWait
 except ImportError as e:
     sys.exit(f"Missing dependency: {e}\nRun: pip install -r requirements.txt")
@@ -137,7 +136,9 @@ def extract_citations(node) -> list[dict]:
     for a in node.find_all("a", href=True):
         href = a["href"]
         if href.startswith("/url?q="):                     # unwrap redirects
-            href = href.split("/url?q=", 1)[1].split("&", 1)[0]
+            # percent-decode too: the target arrives encoded inside the
+            # redirect, so storing it raw would give an unusable citation URL
+            href = unquote(href.split("/url?q=", 1)[1].split("&", 1)[0])
         if not href.startswith("http"):
             continue
         host = (urlparse(href).hostname or "").lower()
@@ -320,7 +321,12 @@ def main() -> None:
                 print(f"    error: {res['error']}")
             else:
                 print(f"    {res['status']}  ({len(res['citations'])} sources)")
-            if i < len(todo):
+            # Don't sleep if the next loop would immediately stop anyway --
+            # otherwise --max-minutes leaves you staring at an idle browser for
+            # a final delay before it prints that it's finished.
+            out_of_time = (args.max_minutes and
+                           (time.time() - session_started) / 60 >= args.max_minutes)
+            if i < len(todo) and not out_of_time:
                 time.sleep(random.uniform(C.DELAY_MIN, C.DELAY_MAX))
     except KeyboardInterrupt:
         print("\nInterrupted — everything so far is saved. Re-run to resume.")

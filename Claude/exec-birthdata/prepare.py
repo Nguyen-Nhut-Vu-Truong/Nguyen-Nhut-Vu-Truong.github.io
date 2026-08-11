@@ -29,7 +29,23 @@ def load_execucomp() -> pd.DataFrame:
             "EXECUCOMP_PATH in config.py."
         )
 
-    df = pd.read_excel(path) if path.suffix.lower() in {".xlsx", ".xls"} else pd.read_csv(path)
+    is_excel = path.suffix.lower() in {".xlsx", ".xls"}
+
+    # Peek at the header first so identifier columns can be forced to str AT READ
+    # TIME. Casting after the fact is too late: pandas has already inferred
+    # int64 and dropped leading zeros, and Compustat gvkey is routinely a
+    # zero-padded 6-digit code ("001690"). That silent truncation would only
+    # surface much later, as a failed merge back into Execucomp.
+    head = pd.read_excel(path, nrows=0) if is_excel else pd.read_csv(path, nrows=0)
+    by_lower = {c.strip().lower(): c for c in head.columns}
+    id_dtypes = {
+        by_lower[C.EXECUCOMP_COLUMNS[k].strip().lower()]: str
+        for k in ("execid", "gvkey")
+        if C.EXECUCOMP_COLUMNS[k].strip().lower() in by_lower
+    }
+
+    df = (pd.read_excel(path, dtype=id_dtypes) if is_excel
+          else pd.read_csv(path, dtype=id_dtypes))
     df.columns = [c.strip().lower() for c in df.columns]
 
     wanted = {k: v.strip().lower() for k, v in C.EXECUCOMP_COLUMNS.items()}
@@ -42,6 +58,11 @@ def load_execucomp() -> pd.DataFrame:
         )
 
     df = df[list(wanted.values())].rename(columns={v: k for k, v in wanted.items()})
+    # Keep identifiers as strings end to end. Left as inferred ints they would
+    # lose any leading zeros on the CSV round-trip, and the keys would then fail
+    # to match when these results are merged back into Execucomp later.
+    df["execid"] = df["execid"].astype(str).str.strip()
+    df["gvkey"] = df["gvkey"].astype(str).str.strip()
     df["year"] = pd.to_numeric(df["year"], errors="coerce")
     df["age"] = pd.to_numeric(df["age"], errors="coerce")
     df["tdc1"] = pd.to_numeric(df["tdc1"], errors="coerce")
@@ -198,7 +219,8 @@ def main() -> None:
     cfo = people[people.role == "CFO"]
     by_flag = (cfo["cfo_id_method"] == "cfoann_flag").sum()
     print(f"  ...by CFOANN flag    : {by_flag:,}")
-    print(f"  ...by TITLE match    : {len(cfo) - by_flag:,}   <-- pre-2006 regime")
+    print(f"  ...by TITLE match    : {len(cfo) - by_flag:,}   "
+          "<-- mostly pre-2006, where CFOANN is unpopulated")
     have_by = people["birth_year_est"].notna().sum()
     print(f"Birth year derivable   : {have_by:,} / {len(people):,} ({have_by/len(people):.1%})")
     inconsistent = (people["birth_year_spread"] > 1).sum()
