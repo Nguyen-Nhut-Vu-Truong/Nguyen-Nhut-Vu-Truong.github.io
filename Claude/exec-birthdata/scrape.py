@@ -200,12 +200,55 @@ def ask(driver, query: str, dump_dom: bool = False) -> dict:
 
 # --- run -------------------------------------------------------------------
 
+def show_status() -> None:
+    """Progress so far, without touching the browser."""
+    if not C.SAMPLE_PATH.exists():
+        sys.exit("No sample yet. Run prepare.py first.")
+    sample = pd.read_csv(C.SAMPLE_PATH, dtype={"execid": str})
+    total = len(sample) * len(FIELDS)
+
+    if not C.DB_PATH.exists():
+        print(f"0 / {total} queries done — nothing collected yet.")
+        return
+
+    con = connect()
+    rows = con.execute(
+        "SELECT status, COUNT(*) FROM answers GROUP BY status"
+    ).fetchall()
+    con.close()
+
+    by = dict(rows)
+    settled = by.get("ok", 0) + by.get("unsourced", 0)
+    print(f"Progress: {settled} / {total} settled ({settled/total:.0%})")
+    for status in ("ok", "unsourced", "empty", "error"):
+        if by.get(status):
+            note = "  <- will be retried on resume" if status in ("empty", "error") else ""
+            print(f"  {status:10s} {by[status]:5d}{note}")
+
+    left = total - settled
+    if left:
+        mins = left * (C.DELAY_MIN + C.DELAY_MAX) / 2 / 60
+        print(f"\n{left} queries left — roughly {mins:.0f} min "
+              f"({mins/60:.1f} h) of running time.")
+    else:
+        print("\nAll queries settled. Next: python validate_report.py")
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="Query AI Mode for birth data. Safe to stop and resume at any time.")
     ap.add_argument("--dump-dom", action="store_true",
-                    help="save HTML+screenshot of the first page, then exit")
+                    help="save HTML+screenshot of one page and exit; writes nothing to the db")
     ap.add_argument("--limit", type=int, default=None, help="stop after N queries")
+    ap.add_argument("--max-minutes", type=float, default=None,
+                    help="stop cleanly after this many minutes (for a fixed working session)")
+    ap.add_argument("--status", action="store_true",
+                    help="show progress and exit without querying anything")
     args = ap.parse_args()
+
+    if args.status:
+        show_status()
+        return
 
     if not C.SAMPLE_PATH.exists():
         sys.exit(f"No sample at {C.SAMPLE_PATH}. Run prepare.py first.")
@@ -226,10 +269,18 @@ def main() -> None:
     est_min = len(todo) * (C.DELAY_MIN + C.DELAY_MAX) / 2 / 60
     print(f"Estimated wall clock at configured delays: ~{est_min:.0f} min\n")
 
+    if args.max_minutes:
+        print(f"Will stop cleanly after {args.max_minutes:g} minutes.\n")
+
     driver = build_driver()
     counts = {"ok": 0, "unsourced": 0, "empty": 0, "error": 0}
+    session_started = time.time()
     try:
         for i, (row, field) in enumerate(todo, 1):
+            if args.max_minutes and (time.time() - session_started) / 60 >= args.max_minutes:
+                print(f"\nReached the {args.max_minutes:g}-minute limit — "
+                      "stopping. Everything so far is saved; re-run to resume.")
+                break
             query = build_query(row, field)
             print(f"[{i}/{len(todo)}] {row['exec_fullname']} ({row['role']}) — {field}")
 

@@ -34,12 +34,62 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
+python inspect_data.py     # check the export + column mapping (reads only)
 python prepare.py          # Execucomp -> birth-year estimates -> 200-exec sample
 python scrape.py           # queries AI Mode, resumable; ~2-3 h at default delays
 python validate_report.py  # validation + writes the result report
 ```
 
 Then hand-check `output/birthplace_handcheck.csv` — see below.
+
+### Which Execucomp columns you need
+
+Eleven, from `comp.anncomp`. Everything else in your export is ignored:
+
+```
+execid  gvkey  year  exec_fullname  coname  title
+ceoann  cfoann  age  gender  tdc1
+```
+
+`tdc1` is used only as a firm-size proxy. None of the detailed compensation
+variables are touched, so a minimal extract is enough for the pilot. (You will
+want the full set later for the actual panel — not for this.)
+
+Run `inspect_data.py` first. It verifies each column against
+`config.EXECUCOMP_COLUMNS`, suggests matches for any it cannot find, and reports
+how many CEOs and CFOs you will get plus your `AGE` coverage — which is what
+gives every scraped birth date its independent check. A wrong column name is the
+most common first-run failure, and this catches it in seconds instead of
+several minutes in.
+
+## Stopping and resuming
+
+The scraper checkpoints to SQLite **after every query**, so stopping costs at
+most the one query in flight. Nothing is held in memory that matters.
+
+```bash
+python scrape.py --status          # progress; queries nothing
+python scrape.py --max-minutes 90  # work a fixed session, then stop cleanly
+python scrape.py                   # resume; already-answered queries are skipped
+```
+
+Ctrl-C is equally safe. On resume, `ok` and `unsourced` records are skipped —
+the page answered, and the answer is kept either way — while `empty` and `error`
+are retried, because `empty` usually means the answer-container selector went
+stale and you will want those records back after fixing it.
+
+Practical notes for an on-and-off schedule:
+
+- **Stop before sleeping the machine.** A suspended run resumes with a dead
+  chromedriver connection; it recovers, but the in-flight query errors first.
+  Ctrl-C is cleaner.
+- **Close any manual Chrome window using the same profile** — Selenium cannot
+  attach to a locked profile directory.
+- **Do not run two copies at once** against the same database.
+- **Re-check the login occasionally.** Over days the Google session can expire;
+  the symptom is a sudden run of `empty` results.
+- Intermittent bursts are, if anything, a less bot-like pattern than continuous
+  running.
 
 ## What each step does
 
